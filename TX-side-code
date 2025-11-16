@@ -1,0 +1,125 @@
+#include <RH_ASK.h>
+#include <SPI.h>
+
+// Debug Mode (Set to true for debugging)
+#define DEBUG_MODE true
+
+// Sensor Pins
+const int alcoholSensorPin = A0; // analog read
+const int wearSensorPin = A1;    // digital IR output
+const int sleepSensorPin = A2;   // digital IR output
+const int buzzerPin = 7;         // Buzzer connected to pin 7
+
+// Create RF Object (default pins: tx=12 rx=11 for RH_ASK)
+RH_ASK rf_driver;
+
+// Drowsiness detection params
+const int drowsinessThreshold = 5;
+const unsigned long drowsinessTimeWindow = 10000UL; // 10s
+const unsigned long resetTime = 5000UL; // 5s reset
+
+unsigned long sleepTimestamps[drowsinessThreshold];
+int sleepIndex = 0;
+bool isDrowsy = false;
+
+unsigned long lastSleepDetectionTime = 0;
+unsigned long lastSendTime = 0;
+const unsigned long sendInterval = 500UL; // send every 500 ms for debugging
+
+void setup() {
+  if (DEBUG_MODE) {
+    Serial.begin(115200);
+    delay(100);
+    Serial.println("=== Smart Helmet Transmitter - Debug Mode ===");
+  }
+
+  // Initialize timestamp buffer to 0 (we will ignore zeros in logic)
+  for (int i = 0; i < drowsinessThreshold; i++) sleepTimestamps[i] = 0;
+
+  // Init RF and report status
+  bool rfok = rf_driver.init();
+  if (!rfok) {
+    if (DEBUG_MODE) Serial.println("RF driver init FAILED. Check wiring and library.");
+  } else {
+    if (DEBUG_MODE) Serial.println("RF driver initialized OK.");
+  }
+
+  pinMode(wearSensorPin, INPUT);
+  pinMode(sleepSensorPin, INPUT);
+  pinMode(buzzerPin, OUTPUT);
+  digitalWrite(buzzerPin, LOW); // ensure buzzer off
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+
+  // Read sensors
+  int alcoholAnalog = analogRead(alcoholSensorPin); // 0-1023
+
+  // INVERTED alcohol logic
+  int alcoholLevel = (alcoholAnalog > 400) ? 0 : 1;
+
+  int sleepSignal = digitalRead(sleepSensorPin);
+  int helmetStatus = digitalRead(wearSensorPin);
+
+  // INVERT BOTH digital sensor signals
+  sleepSignal = !sleepSignal;
+  helmetStatus = !helmetStatus;
+
+  if (DEBUG_MODE) {
+    Serial.print("A_raw:"); Serial.print(alcoholAnalog);
+    Serial.print(" A_lvl:"); Serial.print(alcoholLevel);
+    Serial.print(" | Helmet:"); Serial.print(helmetStatus);
+    Serial.print(" | SleepSig:"); Serial.println(sleepSignal);
+  }
+
+  // Drowsiness detection — count only valid timestamps (non-zero)
+// Drowsiness detection — count only valid timestamps (non-zero)
+// Drowsiness detection (10 sec eye closed logic)
+static unsigned long eyeClosedStart = 0;
+
+if (sleepSignal == 1) {
+  // eye is closed
+  lastSleepDetectionTime = currentMillis; // ← IMPORTANT
+  if (eyeClosedStart == 0) {
+    eyeClosedStart = currentMillis; // start timing
+  }
+
+  // If closed for 10 sec → drowsy
+  if ((currentMillis - eyeClosedStart) >= 10000UL) {
+    isDrowsy = true;
+  }
+
+} else {
+  // eye is open → reset timer & state
+  eyeClosedStart = 0;
+  isDrowsy = false;
+}
+
+// Reset drowsiness if no sleep signals for resetTime
+if ((currentMillis - lastSleepDetectionTime) > resetTime) {
+  isDrowsy = false;
+}
+
+  // Buzzer handling (active HIGH assumed)
+  digitalWrite(buzzerPin, isDrowsy ? HIGH : LOW);
+
+  // Send data at intervals
+  if (currentMillis - lastSendTime >= sendInterval) {
+    lastSendTime = currentMillis;
+    String data = String(helmetStatus) + "," + String(alcoholLevel) + "," + String(isDrowsy ? 1 : 0);
+    char msg[data.length() + 1];
+    data.toCharArray(msg, data.length() + 1);
+
+    rf_driver.send((uint8_t *)msg, strlen(msg));
+rf_driver.waitPacketSent();
+
+if (DEBUG_MODE) {
+  Serial.print("TX -> ");
+  Serial.println(data);
+}
+
+  }
+
+  delay(10);
+}        
